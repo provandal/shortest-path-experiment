@@ -57,7 +57,7 @@ from getpass import getpass
 import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
-from anthropic import Anthropic
+from anthropic import Anthropic, AuthenticationError
 
 # Reproducibility for graph generation only. The LLM is not seedable.
 RNG_SEED = 42
@@ -69,11 +69,37 @@ Paste your Anthropic API key when prompted. The key is held in memory only; it i
 
 Don't have one? Get an Anthropic key at [console.anthropic.com](https://console.anthropic.com/). The argument in this notebook reproduces against any frontier model. To swap providers, replace the body of `ask_llm()` below with an OpenAI or Gemini call. The rest of the notebook is provider-agnostic.""")
 
-code("""if 'ANTHROPIC_API_KEY' not in os.environ:
-    os.environ['ANTHROPIC_API_KEY'] = getpass('Enter your Anthropic API key: ')
+code("""MODEL = 'claude-opus-4-7'  # Use any current frontier model.
 
-client = Anthropic()
-MODEL = 'claude-opus-4-7'  # Use any current frontier model.""")
+
+def _key_works(key):
+    \"\"\"One-token probe to verify the key. Costs a fraction of a cent.\"\"\"
+    try:
+        Anthropic(api_key=key).messages.create(
+            model=MODEL,
+            max_tokens=1,
+            messages=[{'role': 'user', 'content': 'hi'}],
+        )
+        return True
+    except AuthenticationError:
+        return False
+
+
+client = None
+for attempt in range(3):
+    key = (os.environ.get('ANTHROPIC_API_KEY') or '').strip()
+    if not key:
+        key = getpass('Enter your Anthropic API key: ').strip()
+    if _key_works(key):
+        os.environ['ANTHROPIC_API_KEY'] = key
+        client = Anthropic()
+        print('Key validated.')
+        break
+    print('Key rejected by the API. Verify it at https://console.anthropic.com/settings/keys')
+    os.environ.pop('ANTHROPIC_API_KEY', None)
+
+if client is None:
+    raise RuntimeError('Could not authenticate with Anthropic after 3 attempts.')""")
 
 # ---------- Graph construction ----------
 md("""## 2. Building the graph
