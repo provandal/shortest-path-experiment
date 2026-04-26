@@ -142,6 +142,16 @@ def draw_graph(g, path=None, title=None):
     plt.tight_layout()
     plt.show()''')
 
+md("""Let's see what these produce. We'll build a small 5-node graph, print its edge list (the same format we'll later hand to the LLM), and draw it.""")
+
+code("""demo_g = build_graph(n_nodes=5, avg_degree=2, seed=RNG_SEED)
+print(f'Generated a graph with {demo_g.number_of_nodes()} nodes and {demo_g.number_of_edges()} edges.')
+print()
+print('Edges:')
+print(graph_to_text(demo_g))
+print()
+draw_graph(demo_g, title='Demo: 5-node weighted graph')""")
+
 # ---------- Dijkstra ----------
 md("""## 3. The deterministic answer: Dijkstra
 
@@ -161,6 +171,18 @@ def time_dijkstra(g, source, target, runs=1000):
         nx.shortest_path(g, source=source, target=target, weight='weight')
     elapsed = time.perf_counter() - start
     return elapsed / runs''')
+
+md("""Run Dijkstra on the demo graph from above and visualize the result. The red edges are the shortest path; the timing tells us what we're competing against.""")
+
+code("""demo_path, demo_weight = dijkstra_path(demo_g, 'N0', 'N4')
+print(f'Shortest path from N0 to N4: {" -> ".join(demo_path)}')
+print(f'Total weight: {demo_weight}')
+print()
+
+avg_runtime = time_dijkstra(demo_g, 'N0', 'N4', runs=1000)
+print(f'Average Dijkstra runtime: {avg_runtime*1e6:.1f} microseconds per query')
+
+draw_graph(demo_g, path=demo_path, title='Dijkstra shortest path: N0 to N4')""")
 
 # ---------- LLM call ----------
 md("""## 4. Asking the LLM
