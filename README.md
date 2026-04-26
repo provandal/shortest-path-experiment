@@ -8,7 +8,7 @@ A small experiment comparing Dijkstra's algorithm against a frontier LLM on shor
 
 `shortest_path_experiment.ipynb` walks through:
 
-1. Building weighted graphs at three scales (5, 20, 50 nodes).
+1. Building weighted graphs at four scales (5, 20, 50, 100 nodes).
 2. Running NetworkX's Dijkstra to establish ground truth.
 3. Asking a frontier LLM the same question, in plain text.
 4. Repeating each query ten times to measure consistency, not just accuracy.
@@ -20,7 +20,7 @@ Read the [companion post on provandal.dev](https://provandal.dev/) for the longe
 
 ## Running
 
-Click the Colab badge above. You will need an Anthropic API key from [console.anthropic.com](https://console.anthropic.com/). Estimated cost: $0.50 to $2.00 in API credits to run the whole notebook.
+Click the Colab badge above. You will need an Anthropic API key from [console.anthropic.com](https://console.anthropic.com/). Estimated cost: $2 to $5 in API credits to run the whole notebook.
 
 To use a different provider (OpenAI, Gemini, etc.), replace just the body of the `ask_llm()` function. The rest of the notebook is provider-agnostic.
 

@@ -34,7 +34,7 @@ We will:
 5. Compare cost and latency.
 6. Draw the architectural conclusion.
 
-**Estimated cost to run end to end: roughly $0.50 to $2.00 in API credits.** **Estimated time: 10 to 20 minutes, mostly waiting for API responses.**
+**Estimated cost to run end to end: roughly $2 to $5 in API credits.** **Estimated time: 15 to 30 minutes, mostly waiting for API responses.**
 
 Audience: infrastructure architects, agent developers, anyone designing systems that combine deterministic and probabilistic components.
 
@@ -242,7 +242,7 @@ End your response with valid JSON in exactly this shape (and nothing after the J
 {{"path": ["NODE_A", "NODE_B", ...], "total_weight": <number>}}"""
 
 
-def ask_llm(graph_text, source, target, prompt_template=BASIC_PROMPT, max_tokens=2048):
+def ask_llm(graph_text, source, target, prompt_template=BASIC_PROMPT, max_tokens=4096):
     """Send one query to the LLM. Returns (raw_text, usage)."""
     prompt = prompt_template.format(graph_text=graph_text, source=source, target=target)
     msg = client.messages.create(
@@ -392,39 +392,74 @@ md("""Chain-of-thought may help on the optimal-rate, but watch what it costs in 
 
 More importantly: even when CoT gets the right answer, we have no way to *trust* that it got the right answer without checking it against Dijkstra. So we run Dijkstra anyway. Which raises the question: why is the LLM in the loop at all?""")
 
+# ---------- 100 nodes ----------
+md("""## 9. The largest case: 100 nodes
+
+Real production networks have thousands of nodes. We are nowhere near that. But 100 nodes is the point where the prompt starts to feel large, where the LLM's failure mode stops being occasional, and where chain-of-thought really shows its cost. We will run both prompts at this scale so the comparison is honest.""")
+
+code("""g_xl = build_graph(n_nodes=100, avg_degree=3, seed=RNG_SEED)
+source, target = 'N0', 'N99'
+true_path, true_weight = dijkstra_path(g_xl, source, target)
+print(f'Ground truth: {" -> ".join(true_path)}  (total weight {true_weight})')
+print(f'Edges in the prompt: {g_xl.number_of_edges()}')""")
+
+md("""### Basic prompt on 100 nodes""")
+
+code("""df_xl = run_trials(g_xl, 'N0', 'N99', n_trials=10, label='100 nodes, basic prompt')""")
+
+md("""### Chain-of-thought on 100 nodes
+
+Same graph, same question, but with the step-by-step prompt. Watch the `output_tokens` column — this is the most expensive single block in the notebook.""")
+
+code("""df_xl_cot = run_trials(g_xl, 'N0', 'N99', n_trials=10,
+                          prompt_template=COT_PROMPT,
+                          label='100 nodes, chain-of-thought prompt')""")
+
+md("""At 100 nodes, even chain-of-thought tends to fail to find the optimum on most runs, and the runs that do succeed disagree with each other. Meanwhile, Dijkstra has produced the same correct answer instantly, every time, from section 3 onward.""")
+
 # ---------- Cost / latency ----------
-md("""## 9. Cost and latency
+md("""## 10. Cost and latency
 
-Compare the two approaches on the 50-node graph.""")
+Now compare every approach we have run, side by side.""")
 
-code("""# Time Dijkstra. Average over many iterations.
-dijkstra_seconds = time_dijkstra(g_large, 'N0', 'N49', runs=1000)
-print(f'Dijkstra average runtime: {dijkstra_seconds*1e6:.1f} microseconds')
-print(f'Dijkstra cost per query: $0.00 (compute is essentially free at this scale)')
-print()
-
-# LLM stats from the basic-prompt large run.
-# Claude Opus 4.7 pricing: $5/M input tokens, $25/M output tokens (verify at console.anthropic.com).
+code("""# Claude Opus 4.7 pricing: $5/M input tokens, $25/M output tokens (verify at console.anthropic.com).
 INPUT_PRICE_PER_M = 5
 OUTPUT_PRICE_PER_M = 25
 
-llm_input = df_large['input_tokens'].mean()
-llm_output = df_large['output_tokens'].mean()
-llm_cost = (llm_input / 1e6) * INPUT_PRICE_PER_M + (llm_output / 1e6) * OUTPUT_PRICE_PER_M
 
-cot_input = df_large_cot['input_tokens'].mean()
-cot_output = df_large_cot['output_tokens'].mean()
-cot_cost = (cot_input / 1e6) * INPUT_PRICE_PER_M + (cot_output / 1e6) * OUTPUT_PRICE_PER_M
+def _row(approach, df):
+    inp = df['input_tokens'].mean()
+    out = df['output_tokens'].mean()
+    cost = (inp / 1e6) * INPUT_PRICE_PER_M + (out / 1e6) * OUTPUT_PRICE_PER_M
+    return {
+        'approach': approach,
+        'avg_input_tokens': round(inp),
+        'avg_output_tokens': round(out),
+        'cost_per_query_usd': round(cost, 5),
+        'optimal_rate': round(float(df['optimal'].mean()), 2),
+        'deterministic': False,
+    }
+
+
+# Time Dijkstra at the largest scale. Still microseconds.
+dijkstra_seconds = time_dijkstra(g_xl, 'N0', 'N99', runs=1000)
+print(f'Dijkstra average runtime at 100 nodes: {dijkstra_seconds*1e6:.1f} microseconds per query')
+print(f'Dijkstra cost per query: $0.00 (compute is essentially free at this scale)')
+print()
 
 summary = pd.DataFrame([
-    {'approach': 'Dijkstra',          'avg_input_tokens': 0,           'avg_output_tokens': 0,            'cost_per_query_usd': 0.0,       'optimal_rate': 1.0,                                  'deterministic': True},
-    {'approach': 'LLM (basic)',       'avg_input_tokens': round(llm_input), 'avg_output_tokens': round(llm_output), 'cost_per_query_usd': round(llm_cost, 5), 'optimal_rate': float(df_large['optimal'].mean()), 'deterministic': False},
-    {'approach': 'LLM (chain-of-thought)', 'avg_input_tokens': round(cot_input), 'avg_output_tokens': round(cot_output), 'cost_per_query_usd': round(cot_cost, 5), 'optimal_rate': float(df_large_cot['optimal'].mean()), 'deterministic': False},
+    {'approach': 'Dijkstra (any scale)', 'avg_input_tokens': 0, 'avg_output_tokens': 0, 'cost_per_query_usd': 0.0, 'optimal_rate': 1.0, 'deterministic': True},
+    _row('LLM basic, 5 nodes',     df_small),
+    _row('LLM basic, 20 nodes',    df_med),
+    _row('LLM basic, 50 nodes',    df_large),
+    _row('LLM CoT,   50 nodes',    df_large_cot),
+    _row('LLM basic, 100 nodes',   df_xl),
+    _row('LLM CoT,   100 nodes',   df_xl_cot),
 ])
 print(summary.to_string(index=False))""")
 
 # ---------- Conclusion ----------
-md("""## 10. The architectural conclusion
+md("""## 11. The architectural conclusion
 
 Three observations from the data above.
 
