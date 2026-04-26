@@ -28,13 +28,13 @@ This notebook compares Dijkstra against a frontier LLM on the same problem. The 
 We will:
 
 1. Define a small graph and ask both Dijkstra and an LLM to find the shortest path between two nodes.
-2. Run the LLM ten times on the same prompt and see how often it agrees with itself.
-3. Scale the graph up. Watch accuracy and consistency degrade.
+2. Run the LLM repeatedly on the same prompt and see how often it agrees with itself.
+3. Scale the graph up to 100 nodes. Watch what holds up and what does not.
 4. Try chain-of-thought prompting. Watch what improves and what does not.
 5. Compare cost and latency.
 6. Draw the architectural conclusion.
 
-**Estimated cost to run end to end: roughly $2 to $5 in API credits.** **Estimated time: 15 to 30 minutes, mostly waiting for API responses.**
+**Estimated cost to run end to end: roughly $3 to $6 in API credits.** **Estimated time: 20 to 40 minutes, mostly waiting for API responses.**
 
 Audience: infrastructure architects, agent developers, anyone designing systems that combine deterministic and probabilistic components.
 
@@ -361,14 +361,12 @@ draw_graph(g_med, path=true_path, title='20-node graph: ground truth path')""")
 
 code("""df_med = run_trials(g_med, 'N0', 'N19', n_trials=10, label='20 nodes, basic prompt')""")
 
-md("""Look at the `unique valid answers` count and the `optimal` count. This is where the failure mode becomes visible. The model often produces a *valid* path (using only real edges, ending at the right node) but not the *optimal* one. And it disagrees with itself across runs.
-
-An infrastructure architect cannot ship a system whose answer to "which path should this packet take" depends on which time you asked.""")
+md("""At 20 nodes a frontier model is still solid — typically 100% optimal, with most runs returning the same path. The architectural problem has not yet shown up. But notice the input_tokens column: it has roughly tripled from the 5-node case. The cost per query is climbing fast even when accuracy is not falling.""")
 
 # ---------- 50 nodes ----------
 md("""## 7. Larger: 50 nodes
 
-Fifty nodes is still small for real networks but it is where the LLM's failure mode becomes routine rather than occasional.""")
+Fifty nodes is still small for real networks. The prompt is now around 1,300 input tokens and the model has many more candidate paths to evaluate. A frontier model still tends to handle this — let's confirm.""")
 
 code("""g_large = build_graph(n_nodes=50, avg_degree=3, seed=RNG_SEED)
 source, target = 'N0', 'N49'
@@ -378,24 +376,24 @@ print(f'Ground truth: {" -> ".join(true_path)}  (total weight {true_weight})')""
 code("""df_large = run_trials(g_large, 'N0', 'N49', n_trials=10, label='50 nodes, basic prompt')""")
 
 # ---------- CoT ----------
-md("""## 8. Does chain-of-thought rescue this?
+md("""## 8. Does chain-of-thought help?
 
-A reasonable objection at this point is: "You prompted it wrong. Tell it to think step by step."
+A reasonable objection at this point is: "You prompted it wrong. Tell the model to think step by step and it will do even better."
 
-Fair. Let's try.""")
+Let's run the same 50-node graph with a chain-of-thought prompt and see what changes.""")
 
 code("""df_large_cot = run_trials(g_large, 'N0', 'N49', n_trials=10,
                             prompt_template=COT_PROMPT,
                             label='50 nodes, chain-of-thought prompt')""")
 
-md("""Chain-of-thought may help on the optimal-rate, but watch what it costs in tokens (look at the `output_tokens` column). And even when it improves accuracy, the model still disagrees with itself across runs. **We bought a higher mean accuracy at the cost of a much higher token bill, and we still did not buy determinism.**
+md("""At 50 nodes the basic prompt was already at 100% optimal, so CoT has nothing to rescue here. But notice the `output_tokens` column: CoT spent meaningfully more output tokens for no accuracy gain. We will see in section 9 whether that pattern holds, or even reverses, at scale.
 
-More importantly: even when CoT gets the right answer, we have no way to *trust* that it got the right answer without checking it against Dijkstra. So we run Dijkstra anyway. Which raises the question: why is the LLM in the loop at all?""")
+The deeper point — independent of any single run's numbers — is that we have no way to *verify* a CoT answer is correct without checking it against Dijkstra. So we end up running Dijkstra anyway, and the LLM is doing expensive ceremony.""")
 
 # ---------- 100 nodes ----------
 md("""## 9. The largest case: 100 nodes
 
-Real production networks have thousands of nodes. We are nowhere near that. But 100 nodes is the point where the prompt starts to feel large, where the LLM's failure mode stops being occasional, and where chain-of-thought really shows its cost. We will run both prompts at this scale so the comparison is honest.""")
+Real production networks have thousands of nodes. We are nowhere near that. But 100 nodes is the point where the prompt starts to feel large, where the basic-prompt LLM finally drops below 100% optimal, and where the chain-of-thought tax is most visible. We will run both prompts here, with twenty trials each instead of ten, so the comparison is statistically meaningful.""")
 
 code("""g_xl = build_graph(n_nodes=100, avg_degree=3, seed=RNG_SEED)
 source, target = 'N0', 'N99'
@@ -405,17 +403,19 @@ print(f'Edges in the prompt: {g_xl.number_of_edges()}')""")
 
 md("""### Basic prompt on 100 nodes""")
 
-code("""df_xl = run_trials(g_xl, 'N0', 'N99', n_trials=10, label='100 nodes, basic prompt')""")
+code("""df_xl = run_trials(g_xl, 'N0', 'N99', n_trials=20, label='100 nodes, basic prompt')""")
 
 md("""### Chain-of-thought on 100 nodes
 
 Same graph, same question, but with the step-by-step prompt. Watch the `output_tokens` column — this is the most expensive single block in the notebook.""")
 
-code("""df_xl_cot = run_trials(g_xl, 'N0', 'N99', n_trials=10,
+code("""df_xl_cot = run_trials(g_xl, 'N0', 'N99', n_trials=20,
                           prompt_template=COT_PROMPT,
                           label='100 nodes, chain-of-thought prompt')""")
 
-md("""At 100 nodes, even chain-of-thought tends to fail to find the optimum on most runs, and the runs that do succeed disagree with each other. Meanwhile, Dijkstra has produced the same correct answer instantly, every time, from section 3 onward.""")
+md("""This is where the story gets interesting. The basic prompt holds up reasonably well — the model still finds the optimum most of the time. But **chain-of-thought is roughly equal to or *worse than* the basic prompt at this scale**, while costing more tokens. Whatever "thinking step by step" does for the model, it is not unambiguously buying us a better shortest path.
+
+And both prompts still occasionally produce the wrong answer, with no signal at runtime that we could use to know which runs are wrong. Meanwhile, Dijkstra has been producing the same correct answer in microseconds, for free, since section 3.""")
 
 # ---------- Cost / latency ----------
 md("""## 10. Cost and latency
@@ -463,9 +463,9 @@ md("""## 11. The architectural conclusion
 
 Three observations from the data above.
 
-**1. Variance is the real problem, not accuracy.** Even when the LLM gets the right answer, it does not always give the *same* right answer. Run the same query twice on the same graph, get different paths. For some applications that is fine. For an infrastructure component making routing decisions, anomaly diagnoses, or capacity allocations, it is disqualifying. Determinism is not a luxury, it is a property production systems require to be debuggable and trustworthy.
+**1. The LLM is competent here — but not verifiable.** A frontier model gets this right 70 to 100 percent of the time, even at 100 nodes. The problem is not capability. The problem is that on the runs where the model is wrong, you have no signal at runtime to tell which run is which. To know, you would have to verify against Dijkstra — at which point, why was the LLM in the loop at all? "Mostly correct" is not a property production systems can ship on when a deterministic alternative exists.
 
-**2. Chain-of-thought is a tax, not a fix.** CoT improves accuracy, sometimes substantially. But it costs five to ten times more tokens, and it still does not produce determinism. Worse: the only way to know the CoT answer is correct is to verify it against a deterministic algorithm. So we end up running Dijkstra anyway, and the LLM is doing expensive ceremony.
+**2. Chain-of-thought is not a free upgrade.** CoT cost more tokens at every scale and produced equal-or-worse accuracy at 100 nodes than the basic prompt at the same scale. "Tell it to think step by step" is a tax that may or may not buy you anything, with no way to predict in advance which. It is also not a path to determinism: the model still disagrees with itself across runs, and you still cannot trust any single answer without verification.
 
 **3. The right architecture is hybrid.** Look at this not as "LLM bad, algorithm good" but as a decomposition: shortest path is *execution*, not *planning*. The LLM is good at planning ("the user wants to know the optimal route between racks 3 and 7"). It is bad at execution ("here are the actual hops"). When you build agents, the LLM should call Dijkstra, not impersonate it.
 

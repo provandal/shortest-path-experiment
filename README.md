@@ -20,7 +20,7 @@ Read the [companion post on provandal.dev](https://provandal.dev/) for the longe
 
 ## Running
 
-Click the Colab badge above. You will need an Anthropic API key from [console.anthropic.com](https://console.anthropic.com/). Estimated cost: $2 to $5 in API credits to run the whole notebook.
+Click the Colab badge above. You will need an Anthropic API key from [console.anthropic.com](https://console.anthropic.com/). Estimated cost: $3 to $6 in API credits to run the whole notebook.
 
 To use a different provider (OpenAI, Gemini, etc.), replace just the body of the `ask_llm()` function. The rest of the notebook is provider-agnostic.
 
