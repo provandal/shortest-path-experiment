@@ -31,8 +31,9 @@ We will:
 2. Run the LLM repeatedly on the same prompt and see how often it agrees with itself.
 3. Scale the graph up to 100 nodes. Watch what holds up and what does not.
 4. Try chain-of-thought prompting. Watch what improves and what does not.
-5. Compare cost and latency.
-6. Draw the architectural conclusion.
+5. Show the right architecture: have the LLM call Dijkstra as a tool.
+6. Compare cost and latency.
+7. Draw the architectural conclusion.
 
 **Estimated cost to run end to end: roughly $3 to $6 in API credits.** **Estimated time: 20 to 40 minutes, mostly waiting for API responses.**
 
@@ -413,12 +414,120 @@ code("""df_xl_cot = run_trials(g_xl, 'N0', 'N99', n_trials=20,
                           prompt_template=COT_PROMPT,
                           label='100 nodes, chain-of-thought prompt')""")
 
-md("""This is where the story gets interesting. The basic prompt holds up reasonably well — the model still finds the optimum most of the time. But **chain-of-thought is roughly equal to or *worse than* the basic prompt at this scale**, while costing more tokens. Whatever "thinking step by step" does for the model, it is not unambiguously buying us a better shortest path.
+md("""This is where the story gets interesting. The basic prompt holds up well — most of the 20 trials are optimal. But **chain-of-thought lagged the basic prompt by roughly 20 percentage points on our run**, and the same direction held in our smaller n=10 pilot. Whatever "thinking step by step" does for the model here, it is not buying us a better shortest path.
 
-And both prompts still occasionally produce the wrong answer, with no signal at runtime that we could use to know which runs are wrong. Meanwhile, Dijkstra has been producing the same correct answer in microseconds, for free, since section 3.""")
+Both prompts still occasionally produce the wrong answer, with no signal at runtime to tell which runs are wrong. Meanwhile, Dijkstra has been producing the same correct answer in microseconds, for free, since section 3.""")
+
+# ---------- Tool use ----------
+md("""## 10. The right architecture: let the LLM call Dijkstra
+
+Everything so far has been the LLM trying to *be* Dijkstra. That is the wrong job.
+
+Modern LLM APIs let us split the work cleanly: expose Dijkstra as a tool, hand the model only the tool's *description* (not the graph itself), and ask the question. The model decides whether and how to call the tool. Our code runs Dijkstra and returns the result. The model formats the answer.
+
+This is the planner-actor pattern with the wires visible. In production, the same structure is what an **MCP server** gives you — a standardized way to expose tools to LLM agents. The architectural point is the same whether the wiring is MCP, OpenAI function calling, or the Anthropic tool-use API used here.""")
+
+code('''SHORTEST_PATH_TOOL = {
+    'name': 'shortest_path',
+    'description': "Compute the shortest path between two nodes in the network using Dijkstra's algorithm. Returns the optimal path and its total edge weight.",
+    'input_schema': {
+        'type': 'object',
+        'properties': {
+            'source': {'type': 'string', 'description': 'Starting node identifier, e.g. "N0"'},
+            'target': {'type': 'string', 'description': 'Destination node identifier, e.g. "N99"'},
+        },
+        'required': ['source', 'target'],
+    },
+}
+
+
+def ask_llm_with_tool(g, source, target, max_iters=5):
+    """Multi-turn loop: the LLM may request tool calls; we execute and reply.
+
+    The graph is NOT in the prompt. It lives in our process, behind the
+    tool. The model only learns about the network through tool calls.
+    """
+    messages = [{
+        'role': 'user',
+        'content': f'On our test network, what is the shortest path from {source} to {target}? Use any available tools.',
+    }]
+    total_input = total_output = 0
+    tool_called = False
+    claimed_path = None
+    claimed_weight = None
+
+    for _ in range(max_iters):
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=4096,
+            tools=[SHORTEST_PATH_TOOL],
+            messages=messages,
+        )
+        total_input += response.usage.input_tokens
+        total_output += response.usage.output_tokens
+
+        if response.stop_reason == 'tool_use':
+            tool_called = True
+            messages.append({'role': 'assistant', 'content': response.content})
+            tool_results = []
+            for block in response.content:
+                if block.type == 'tool_use' and block.name == 'shortest_path':
+                    path, weight = dijkstra_path(g, block.input['source'], block.input['target'])
+                    claimed_path = path
+                    claimed_weight = weight
+                    tool_results.append({
+                        'type': 'tool_result',
+                        'tool_use_id': block.id,
+                        'content': json.dumps({'path': path, 'total_weight': weight}),
+                    })
+            messages.append({'role': 'user', 'content': tool_results})
+            continue
+
+        text = ''.join(b.text for b in response.content if b.type == 'text')
+        return text, total_input, total_output, claimed_path, claimed_weight, tool_called
+
+    return None, total_input, total_output, claimed_path, claimed_weight, tool_called''')
+
+md("""### One run: see the LLM call the tool
+
+Run it once on the 100-node graph and look at what comes back.""")
+
+code("""text, tin, tout, path, weight, called = ask_llm_with_tool(g_xl, 'N0', 'N99')
+print('Final answer from the model:')
+print(text)
+print()
+print(f'Tool called: {called}')
+print(f'Path returned by tool: {" -> ".join(path) if path else None}')
+print(f'Total weight: {weight}')
+print(f'Tokens used: input={tin}, output={tout}')""")
+
+md("""### Twenty trials: how does this compare to the LLM doing it itself?
+
+Same setup as before — 20 runs on the 100-node graph — but now the LLM has the tool available.""")
+
+code("""truth_path, truth_weight = dijkstra_path(g_xl, 'N0', 'N99')
+rows = []
+for i in range(20):
+    text, tin, tout, path, weight, called = ask_llm_with_tool(g_xl, 'N0', 'N99')
+    optimal = (path is not None and weight == truth_weight)
+    rows.append({
+        'trial': i + 1,
+        'tool_called': called,
+        'path': ' -> '.join(path) if path else 'NO TOOL CALL',
+        'weight': weight,
+        'optimal': optimal,
+        'input_tokens': tin,
+        'output_tokens': tout,
+    })
+df_xl_tool = pd.DataFrame(rows)
+print(df_xl_tool.to_string(index=False))
+print()
+print(f'Optimal: {df_xl_tool[\"optimal\"].sum()}/{len(df_xl_tool)}    Tool called: {df_xl_tool[\"tool_called\"].sum()}/{len(df_xl_tool)}')""")
+
+md("""Compare this to the basic and chain-of-thought runs on the same graph: same problem, but the model now gets the verifiably correct answer every time it calls the tool, at a fraction of the token cost. The LLM is doing the part it is good at — *deciding what to compute and framing the answer* — and Dijkstra is doing the part Dijkstra is good at.""")
 
 # ---------- Cost / latency ----------
-md("""## 10. Cost and latency
+md("""## 11. Cost and latency
 
 Now compare every approach we have run, side by side.""")
 
@@ -455,19 +564,20 @@ summary = pd.DataFrame([
     _row('LLM CoT,   50 nodes',    df_large_cot),
     _row('LLM basic, 100 nodes',   df_xl),
     _row('LLM CoT,   100 nodes',   df_xl_cot),
+    _row('LLM + tool, 100 nodes',  df_xl_tool),
 ])
 print(summary.to_string(index=False))""")
 
 # ---------- Conclusion ----------
-md("""## 11. The architectural conclusion
+md("""## 12. The architectural conclusion
 
 Three observations from the data above.
 
-**1. The LLM is competent here — but not verifiable.** A frontier model gets this right 70 to 100 percent of the time, even at 100 nodes. The problem is not capability. The problem is that on the runs where the model is wrong, you have no signal at runtime to tell which run is which. To know, you would have to verify against Dijkstra — at which point, why was the LLM in the loop at all? "Mostly correct" is not a property production systems can ship on when a deterministic alternative exists.
+**1. The LLM is competent here — but not verifiable.** A frontier model gets this right 75 to 100 percent of the time, even at 100 nodes. The problem is not capability. The problem is that on the runs where the model is wrong, you have no signal at runtime to tell which run is which. To know, you would have to verify against Dijkstra — at which point, why was the LLM in the loop at all? "Mostly correct" is not a property production systems can ship on when a deterministic alternative exists.
 
 **2. Chain-of-thought is not a free upgrade.** CoT cost more tokens at every scale and produced equal-or-worse accuracy at 100 nodes than the basic prompt at the same scale. "Tell it to think step by step" is a tax that may or may not buy you anything, with no way to predict in advance which. It is also not a path to determinism: the model still disagrees with itself across runs, and you still cannot trust any single answer without verification.
 
-**3. The right architecture is hybrid.** Look at this not as "LLM bad, algorithm good" but as a decomposition: shortest path is *execution*, not *planning*. The LLM is good at planning ("the user wants to know the optimal route between racks 3 and 7"). It is bad at execution ("here are the actual hops"). When you build agents, the LLM should call Dijkstra, not impersonate it.
+**3. The right architecture is hybrid — and section 10 shows it concretely.** Expose Dijkstra as a tool and let the LLM *call* it instead of *impersonate* it. The model gets the verifiably correct answer at a fraction of the token cost, and uses its strengths — choosing what to compute, framing the result — instead of fighting them. This is a decomposition: shortest path is *execution*, not *planning*. The LLM is good at planning ("the user wants the optimal route between racks 3 and 7"). It is bad at execution ("here are the actual hops"). When you build agents, the LLM should call Dijkstra, not impersonate it.
 
 This pattern generalizes. For any task where (a) a deterministic algorithm exists, (b) it runs faster than an LLM call, and (c) it produces verifiable output, the LLM should not be the executor. The LLM should decide which tool to use, on which inputs, and what to do with the result. The execution belongs to the deterministic component.
 

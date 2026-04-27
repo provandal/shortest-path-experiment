@@ -11,10 +11,11 @@ A small experiment comparing Dijkstra's algorithm against a frontier LLM on shor
 1. Building weighted graphs at four scales (5, 20, 50, 100 nodes).
 2. Running NetworkX's Dijkstra to establish ground truth.
 3. Asking a frontier LLM the same question, in plain text.
-4. Repeating each query ten times to measure consistency, not just accuracy.
+4. Repeating each query several times to measure consistency, not just accuracy.
 5. Trying chain-of-thought prompting to see what it improves and what it doesn't.
-6. Comparing cost and latency.
-7. Drawing the architectural conclusion: shortest path is execution, not planning.
+6. Demonstrating the right architecture: exposing Dijkstra as a tool and letting the LLM call it.
+7. Comparing cost and latency.
+8. Drawing the architectural conclusion: shortest path is execution, not planning.
 
 Read the [companion post on provandal.dev](https://provandal.dev/) for the longer version of the argument.
 
